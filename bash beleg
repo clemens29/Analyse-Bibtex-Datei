@@ -1,0 +1,168 @@
+#!/bin/bash
+stat() {
+	echo Anzahl Literatureinträge insgesamt:
+	grep "^@" literatur.bib | wc -l
+	echo
+
+	echo Anzahl Einträge in jeder Kategorie:
+	grep "^@" literatur.bib | cut -d '{' -f 1 | cut -d '@' -f 2 | sort | uniq -c | sort -n -r 
+	echo
+
+	echo Anzahl Einträge pro Jahr:
+	grep "year =" literatur.bib | cut -d '=' -f 2 | sed 's/[[:space:]]*//' | cut -d ',' -f 1 | sort | uniq -c
+	echo
+}
+
+check() {
+	echo title-Zeilen, bei denen die Anführungszeichen um die geschweiften Klammern fehlen:
+	grep -n "\<title =[[:space:]]*{" literatur.bib 
+	echo
+
+	echo Zeilen, die länger als 80 Zeichen sind:
+	# Speichern der der Zeichenlänge von allen Zeilen
+	n=$(cat literatur.bib | awk '{ print length }')
+	# count = jeweilige Zeile
+	count=0
+	for i in $n
+	do
+		let count++
+		if [ $i -gt 80 ]
+		then
+			echo -n $count:
+			sed -n "$count"p literatur.bib
+			
+		fi
+	done 
+	echo
+
+	echo Zeilen mit unplausiblen Jahreszahlen:
+	# kleiner als 1500 oder größer als das aktuelle Jahr
+	curr_year=$(date | cut -d ' ' -f 6)
+	# Jahreszahl im Zitierschlüssel stimmt nicht mit year Eintrag überein
+	n=$(grep -n "^@" literatur.bib | cut -d ':' -f 1)
+	for z in $n
+	do
+		year1=$(sed -n "$z"p literatur.bib | grep ":[0-9]\{4\}\|xxxx:" | cut -d ':' -f 2)
+		# maximale Länge eines Eintrags
+		let max=$z+100
+		end=$(sed -n "$z,$max"p literatur.bib | grep -n -m 1 "^}" | cut -d ':' -f 1)
+		let end=$z+$end
+		year2=$(sed -n "$z,$end"p literatur.bib | grep "year =" | cut -d '=' -f 2 | sed 's/[[:space:]]*//' | cut -d ',' -f 1)
+		if [ ${#year1} -ge 1 ] && [ ${#year2} -ge 1 ]  && [ $year1 != "xxxx" ]
+		then
+			if [ $year1 -ne $year2 ] || [ $year1 -lt 1500 ] || [ $year2 -lt 1500 ] || [ $year1 -gt $curr_year ] || [ $year2 -gt $curr_year ]
+			then
+				echo -n "$z:"
+				sed -n "$z,$end"p literatur.bib
+			fi
+		fi
+	done
+	echo
+
+	echo Zeilen ohne korrekten Zitierschlüssel:	#not done
+	grep -n "^@" literatur.bib | grep -v "@[[:alpha:]]\+{\([[:alpha:]]\|-\)\+:\([0-9]\{4\}\|xxxx\):\(\w\|[+-._]\)\+,$"
+	echo
+	
+	echo Einträge, deren letzte Zeile mit einem Komma endet:
+	n=$(grep -n "^}" literatur.bib | cut -d ':' -f 1)	
+	for z in $n
+	do
+		let i=$z-1
+		# Suche nach einem Komma am Zeilenende
+		check=$(sed -n "$i"p literatur.bib | grep ",$")
+		if [ $? -eq 0 ]
+		then
+			echo -n "$i:"
+			sed -n "$i"p literatur.bib
+		fi
+	done
+	echo
+
+	echo urls, die nicht mehr existieren:	
+	urls=$(grep -n "url =" literatur.bib | cut -d ':' -f 1)
+	for z in $urls
+	do 
+		link=$(sed -n "$z"p literatur.bib | cut -d '{' -f 2 | cut -d '}' -f 1)
+		if [ "$link" != "" ] 
+		then	
+			found=$(wget --spider --quiet $link) 
+			if [ $? -ne 0 ]
+			then	
+				echo -n "$z:"
+				sed -n "$z"p literatur.bib 
+			fi
+		fi
+	done
+
+}
+
+search_one_year() {
+	n=$(grep -n ":$1:" literatur.bib | cut -d ':' -f 1)
+	if [ ${#n} -eq 0 ]
+        then
+                echo "Keine Einträge für das Jahr $1 gefunden!"
+		echo
+	else
+		echo "Einträge für das Jahr $1"
+		for i in $n
+		do
+			#maximal weitere Zeilen eines Listings
+			let max=$i+100
+			#Suche in range($i,$max) nach einem Ende des Listings
+			end=$(sed -n "$i,$max"p literatur.bib | grep -n -m 1 "^}" | cut -d ':' -f 1)
+			let end=$i+$end
+			sed -n "$i,$end"p literatur.bib
+		done
+	fi	
+}
+
+search() { 
+	# nur ein Jahr 
+	if [ ${#1} -eq 4 ] 
+	then
+		search_one_year $1
+	# mehrere Jahre
+	else
+		first=$(echo "$1" | cut -d '-' -f 1)
+		last=$(echo "$1" | cut -d '-' -f 2)
+		if [ $first -gt $last ]
+		then
+			tmp=$first
+			first=$last
+			last=$tmp
+		fi
+		# führe für jedes Jahr im Intervall $first $last search_one_year() aus
+		for year in $(seq $first $last)
+		do
+			search_one_year $year
+		done
+	fi
+}
+
+if ([ $# -ne 1 ] && [ $# -ne 2 ]) || ([ $1 != "stat" ] && [ $1 != "check" ] && [ $1 != "search" ])
+then
+	echo "usage: $0 <stat|check|search>"
+	exit 1
+else
+	echo	
+	if [ $1 = "stat" ]
+	then
+		stat
+	elif [ $1 = "check" ]
+	then
+		check
+	else
+		if [ $# -ne 2 ] 
+		then
+			echo "usage: $0 <stat|check|search> <interval>"
+			exit 2	
+		elif [ ${#2} -ne 9 ] && [ ${#2} -ne 4 ]
+		then
+			echo "usage: $0 false <interval> (xxxx-yyyy)/(xxxx)"
+                        exit 3
+		else	
+			search $2
+		fi
+	fi
+fi
+exit 0
